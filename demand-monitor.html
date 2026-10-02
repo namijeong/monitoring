@@ -1,0 +1,1106 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>순천공장 수요전력 관리</title>
+<meta name="description" content="15분 최대수요전력 실시간 감시, 10분 판정 경보, 라인별 사용량, PLTCM 제어 가이드">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- 웹폰트는 화면 표시를 막지 않게 비동기로 로드. 인터넷이 막힌 공장망에서도 시스템 글꼴로 바로 뜬다 -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" media="print" onload="this.media='all'">
+<style>
+/* 레이아웃: 상황실 전광판. 상태 띠 → KPI 한 줄 → [차트 | 가이드] → [라인별 | 이력] → 설정. 1080px 이하 한 열로 쌓임.
+   색: 차가운 철강 톤 중립색 + 파란 강조 1개. 상태색(--good/--warn/--crit)은 상태 표시에만, 항상 아이콘·글자와 함께. */
+:root {
+  --bg: #edf0f3;          /* 바탕: 푸른 기가 도는 강판 회색 */
+  --panel: #ffffff;
+  --sunk: #f3f5f8;        /* 패널 안 오목한 면 */
+  --ink: #11161c;
+  --ink-2: #48525e;
+  --muted: #74808c;
+  --line: #d6dce3;
+  --grid: #e7ebef;
+  --accent: #2a78d6;
+  --accent-ink: #ffffff;
+  --accent-soft: #d8e7fa;
+  --series-2: #4a3aa7;
+  --good: #0ca30c;
+  --warn: #fab219;
+  --crit: #d03b3b;
+  --shadow: 0 1px 2px rgb(16 24 40 / .05);
+  --font-sans: "IBM Plex Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1115; --panel: #161a1f; --sunk: #1c2127; --ink: #eef1f4; --ink-2: #b2bbc5; --muted: #828c97;
+    --line: #29303a; --grid: #222830; --accent: #3987e5; --accent-soft: #1a3150; --series-2: #9085e9;
+    --shadow: none; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1115; --panel: #161a1f; --sunk: #1c2127; --ink: #eef1f4; --ink-2: #b2bbc5; --muted: #828c97;
+  --line: #29303a; --grid: #222830; --accent: #3987e5; --accent-soft: #1a3150; --series-2: #9085e9;
+  --shadow: none; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+/* display:flex 등이 hidden 속성을 덮어쓰지 않게 (로컬 실행 시 기본 스타일에 이 규칙이 없다) */
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-sans); font-size: 14px; line-height: 1.5; margin: 0; }
+.wrap { max-width: 1320px; margin: 0 auto; padding-inline: 16px; padding-block: 18px 40px; display: grid; gap: 14px; }
+h1, h2 { margin: 0; text-wrap: balance; }
+h2 { font-size: 13px; font-weight: 600; letter-spacing: .04em; color: var(--ink-2); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.note { font-size: 12.5px; color: var(--muted); margin: 0; max-width: 75ch; }
+
+/* 헤더 */
+.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; }
+.brand { display: grid; gap: 2px; min-width: 0; }
+.brand h1 { font-size: 21px; font-weight: 700; letter-spacing: -.01em; }
+.brand .sub { font-size: 12.5px; color: var(--muted); }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.clock { font-family: var(--font-mono); font-size: 24px; font-weight: 600; letter-spacing: .02em; font-variant-numeric: tabular-nums; }
+.mode { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); white-space: nowrap; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.seg button { border: 0; background: transparent; padding: 6px 11px; font-size: 13px; color: var(--ink-2); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button:hover { background: var(--sunk); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+.btn:hover { border-color: var(--muted); }
+.btn[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; padding: 9px 12px; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* 상태 띠 */
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 18px; border-radius: var(--r);
+  background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.strip[data-level="warn"] { background: color-mix(in srgb, var(--warn) 15%, var(--panel)); border-color: color-mix(in srgb, var(--warn) 60%, var(--line)); }
+.strip[data-level="crit"] { background: color-mix(in srgb, var(--crit) 13%, var(--panel)); border-color: var(--crit); }
+.strip .icon { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 18px; font-weight: 700; background: var(--c, var(--good)); }
+.strip[data-level="warn"] .icon { color: #1d1500; }
+.strip[data-level="crit"] .icon { animation: pulse 1.1s ease-in-out infinite; }
+.strip .msg { flex: 1 1 320px; min-width: 0; }
+.strip .msg b { display: block; font-size: 17px; line-height: 1.35; }
+.strip .msg span { font-size: 13px; color: var(--ink-2); }
+@keyframes pulse { 50% { transform: scale(1.14); } }
+@media (prefers-reduced-motion: reduce) { .strip .icon { animation: none !important; } }
+
+/* KPI */
+.kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; display: grid; gap: 2px; align-content: start; box-shadow: var(--shadow); min-width: 0; }
+.kpi .k { font-size: 12px; color: var(--muted); letter-spacing: .02em; }
+.kpi .v { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 26px; font-weight: 600; line-height: 1.25; white-space: nowrap; }
+.kpi .v small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.kpi .d { font-size: 12.5px; color: var(--ink-2); }
+.kpi.key { border-color: var(--ink-2); }
+.meter { height: 6px; border-radius: 3px; background: var(--grid); position: relative; overflow: hidden; margin-top: 6px; }
+.meter i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--accent); transition: width .4s ease; }
+.meter[data-level="warn"] i { background: var(--warn); }
+.meter[data-level="crit"] i { background: var(--crit); }
+
+/* 패널 */
+.grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; min-width: 0; box-shadow: var(--shadow); }
+.ph { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { display: inline-block; width: 16px; border-top: 2px solid; }
+.chart-box { position: relative; }
+.chart-box svg { display: block; width: 100%; height: auto; overflow: visible; }
+.tip { position: absolute; top: 8px; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; min-width: 160px; box-shadow: 0 6px 18px rgb(0 0 0 / .14); z-index: 2; }
+.tip b { display: block; margin-bottom: 3px; }
+.tip div { display: flex; justify-content: space-between; gap: 12px; color: var(--ink-2); }
+.tip div span:last-child { color: var(--ink); }
+
+/* 라인별 막대 */
+.bars { display: grid; gap: 6px; }
+.bar { display: grid; grid-template-columns: 78px minmax(0, 1fr) 92px 48px; gap: 10px; align-items: center; font-size: 13px; padding: 2px 4px; border-radius: 6px; }
+.bar:hover { background: var(--sunk); }
+.bar .n { font-weight: 600; white-space: nowrap; }
+.bar .tr { height: 16px; position: relative; }
+.bar .tr i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 0 4px 4px 0; transition: width .4s ease; }
+.bar .val { text-align: right; }
+.bar .pc { text-align: right; font-size: 12px; color: var(--muted); }
+.tag { font-size: 10.5px; font-weight: 600; padding: 0 5px; margin-left: 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--ink-2); vertical-align: 1px; }
+.axis { display: grid; grid-template-columns: 78px minmax(0, 1fr) 92px 48px; gap: 10px; padding-inline: 4px; font-size: 11px; color: var(--muted); }
+.ticks { position: relative; height: 16px; border-top: 1px solid var(--line); }
+.ticks span { position: absolute; top: 1px; transform: translateX(-50%); }
+.total { display: flex; justify-content: space-between; align-items: baseline; border-top: 1px solid var(--line); padding-top: 8px; font-size: 13px; color: var(--ink-2); }
+.total b { color: var(--ink); font-size: 15px; }
+
+/* PLTCM 가이드 */
+.coil { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.order { display: grid; gap: 2px; padding: 14px 16px; border-radius: 8px; background: var(--sunk); border: 1px solid transparent; }
+.order .lbl { font-size: 12px; color: var(--muted); }
+.order .big { font-size: 25px; font-weight: 700; letter-spacing: -.01em; line-height: 1.25; }
+.order .big .num { font-size: 32px; }
+.guide[data-active="crit"] .order { background: color-mix(in srgb, var(--crit) 12%, var(--panel)); border-color: var(--crit); }
+dl.kv { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 13px; }
+dl.kv dt { color: var(--muted); }
+dl.kv dd { margin: 0; text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.verdict { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); }
+.verdict .dot { flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; background: var(--c); }
+
+/* 이력 */
+.tbl { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 7px 6px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+.r { text-align: right; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 1px 9px 1px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); white-space: nowrap; }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+.flag { font-size: 11px; color: var(--muted); margin-left: 4px; }
+
+/* 설정 */
+details.panel > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); list-style: none; }
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary::before { content: "▸ "; }
+details.panel[open] > summary::before { content: "▾ "; }
+.form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.form label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.form input { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--sunk); font-family: var(--font-mono); font-size: 14px; }
+pre { margin: 0; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--sunk); font-family: var(--font-mono); font-size: 12px; overflow-x: auto; }
+.reset-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+/* 알림 줄: 보기 전용 탭, 저장 실패 */
+.notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; border-radius: var(--r); font-size: 13px;
+  border: 1px dashed var(--ink-2); background: var(--sunk); }
+.notice b { font-weight: 600; }
+.notice span { flex: 1 1 280px; min-width: 0; color: var(--ink-2); }
+.btn.need { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 18%, var(--panel)); font-weight: 600; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.chart-box text.halo { paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+
+@media (max-width: 1080px) {
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 620px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .kpi { padding: 10px 12px; }
+  .kpi .v { font-size: 20px; }
+  .kpi:last-child { grid-column: 1 / -1; }
+  .clock { font-size: 20px; }
+  .bar, .axis { grid-template-columns: 70px minmax(0, 1fr) 82px; }
+  .bar .pc, .axis > :last-child { display: none; }
+  .tag { display: none; }
+  .order .big { font-size: 21px; } .order .big .num { font-size: 26px; }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>순천공장 최대수요전력 관리</h1>
+      <div class="sub">PLTCM · 1CGL · 2CGL · 3CGL · EGL · CAL · Utility &nbsp;|&nbsp; 15분 수요시한</div>
+    </div>
+    <div class="controls">
+      <span class="mode" id="mode">시뮬레이션 데이터</span>
+      <span class="clock" id="clock">--:--:--</span>
+      <span class="seg" id="speed" role="group" aria-label="시뮬레이션 속도">
+        <button type="button" id="sp1" data-v="1" aria-pressed="true">1×</button>
+        <button type="button" id="sp10" data-v="10" aria-pressed="false">10×</button>
+        <button type="button" id="sp60" data-v="60" aria-pressed="false">60×</button>
+      </span>
+      <button type="button" class="btn" id="pause">일시정지</button>
+      <button type="button" class="btn" id="sound" aria-pressed="false">경보음 꺼짐</button>
+    </div>
+  </header>
+
+  <!-- 상태 띠 (F2) -->
+  <section class="strip" id="strip" data-level="ok">
+    <div class="icon" id="sIcon" aria-hidden="true">✓</div>
+    <div class="msg"><b id="sTitle">정상</b><span id="sText"></span></div>
+    <button type="button" class="btn" id="ack" hidden>경보 확인</button>
+  </section>
+  <!-- 화면낭독기에는 상태가 바뀔 때만 알린다 (매초 갱신되는 문장은 읽지 않음) -->
+  <div class="sr" id="srLive" aria-live="assertive"></div>
+
+  <div class="notice" id="followBar" hidden>
+    <b>보기 전용</b>
+    <span>이 앱이 다른 탭이나 창에서 운영 중입니다. 이 화면은 그쪽 저장본을 받아 보여주며, 조작과 저장은 하지 않습니다.</span>
+    <button type="button" class="btn" id="takeOver">이 탭에서 운영하기</button>
+  </div>
+  <div class="notice" id="saveWarn" hidden>
+    <b>저장 안 됨</b>
+    <span>이 브라우저에서 저장소를 쓸 수 없습니다(사생활 보호 모드, 저장 공간 부족, 보안 정책 등). 새로고침하거나 창을 닫으면 데이터가 사라집니다.</span>
+  </div>
+
+  <!-- KPI (F1-6) -->
+  <section class="kpis" aria-label="주요 지표">
+    <div class="kpi"><div class="k">현재 전력 · 최근 1분 평균</div><div class="v" id="kNow">-</div><div class="d" id="kNowD"></div></div>
+    <div class="kpi"><div class="k">현 구간 평균전력</div><div class="v" id="kAvg">-</div><div class="d" id="kAvgD"></div></div>
+    <div class="kpi key"><div class="k">15분 수요전력 예측</div><div class="v" id="kPred">-</div><div class="d" id="kPredD"></div><div class="meter" id="kMeter" aria-hidden="true"><i></i></div></div>
+    <div class="kpi"><div class="k">남은 시간 허용 평균</div><div class="v" id="kAllow">-</div><div class="d" id="kAllowD"></div></div>
+    <div class="kpi"><div class="k">금일 최대수요전력</div><div class="v" id="kMax">-</div><div class="d" id="kMaxD"></div></div>
+  </section>
+
+  <div class="grid">
+    <!-- F1 분당 평균전력 차트 -->
+    <section class="panel">
+      <div class="ph">
+        <h2 id="chartTitle">15분 구간 분당 평균전력</h2>
+        <div class="legend">
+          <span><i class="sw" style="border-color:var(--series-2)"></i>분 평균</span>
+          <span><i class="sw" style="border-top-width:3px;border-color:var(--accent)"></i>구간 누적 평균</span>
+          <span><i class="sw" style="border-top-style:dotted;border-top-width:3px;border-color:var(--accent)"></i>15분 예측</span>
+          <span><i class="sw" style="border-top-style:dashed;border-color:var(--crit)"></i>목표전력</span>
+        </div>
+      </div>
+      <div class="chart-box" id="chartBox">
+        <svg id="chart" role="img" aria-label="현재 15분 구간의 분당 평균전력 차트"></svg>
+        <div class="tip" id="tip" hidden></div>
+      </div>
+    </section>
+
+    <!-- F4 PLTCM 제어 가이드 -->
+    <section class="panel guide" id="guide">
+      <div class="ph"><h2>PLTCM 제어 가이드</h2><span class="pill" id="gState">대기</span></div>
+      <div class="coil">
+        <span>다음 코일</span>
+        <span class="seg" id="coilSeg" role="group" aria-label="다음 코일 부하">
+          <button type="button" id="coilHigh" data-v="high" aria-pressed="true">고부하재</button>
+          <button type="button" id="coilLow" data-v="low" aria-pressed="false">저부하재</button>
+        </span>
+      </div>
+      <div class="order">
+        <span class="lbl" id="gLbl">다음 코일 고부하재 기준 권장 조치</span>
+        <span class="big">PLTCM 부하 <span class="num" id="gRate">50%</span> 감소</span>
+      </div>
+      <dl class="kv">
+        <dt>현재 PLTCM 부하</dt><dd id="gNow">-</dd>
+        <dt>제어 후 PLTCM 부하</dt><dd id="gAfter">-</dd>
+        <dt>예상 감소량</dt><dd id="gCut">-</dd>
+        <dt>목표 달성 필요 감축량</dt><dd id="gNeed">-</dd>
+        <dt>제어 후 15분 예측</dt><dd id="gPred">-</dd>
+      </dl>
+      <div class="verdict" id="gVerdict"></div>
+      <button type="button" class="btn primary" id="apply">가이드 적용</button>
+      <p class="note" id="gRule"></p>
+    </section>
+  </div>
+
+  <div class="grid">
+    <!-- F3 라인별 막대그래프 -->
+    <section class="panel">
+      <div class="ph">
+        <h2>라인별 수요전력 사용량</h2>
+        <span class="seg" id="barMode" role="group" aria-label="집계 기준">
+          <button type="button" id="bmWin" data-v="win" aria-pressed="true">현 구간 평균</button>
+          <button type="button" id="bmMin" data-v="min" aria-pressed="false">최근 1분</button>
+        </span>
+      </div>
+      <div class="bars" id="bars"></div>
+      <div class="axis num" aria-hidden="true"><span></span><div class="ticks" id="ticks"></div><span></span><span></span></div>
+      <div class="total"><span>7개 라인 합계</span><b class="num" id="barTotal">-</b></div>
+    </section>
+
+    <!-- F5 구간 이력 -->
+    <section class="panel">
+      <div class="ph"><h2>구간별 수요전력 이력</h2><span class="note" id="histNote"></span></div>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>구간</th><th class="r">수요전력 kW</th><th class="r">목표 대비</th><th>상태</th></tr></thead>
+          <tbody id="hist"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- F8 설정 · F6 저장 · F7 연동 -->
+  <details class="panel" id="settings">
+    <summary>설정 · 데이터 연동</summary>
+    <div class="form">
+      <label for="cTarget">목표 최대수요전력 (kW)<input id="cTarget" type="number" step="100" min="1000"></label>
+      <label for="cJudge">경보 판정 시점 (분)<input id="cJudge" type="number" step="1" min="1" max="14"></label>
+      <label for="cCaution">주의 기준 (목표 대비 %)<input id="cCaution" type="number" step="1" min="50" max="100"></label>
+      <label for="cHigh">고부하재 감소율 (%)<input id="cHigh" type="number" step="5" min="0" max="100"></label>
+      <label for="cLow">저부하재 감소율 (%)<input id="cLow" type="number" step="5" min="0" max="100"></label>
+    </div>
+    <p class="note">예측 = (구간 누적 전력량 + 최근 1분 평균전력 × 남은 시간) ÷ 15분. 판정 시점 이후 예측이 목표를 넘으면 경보, 그 전에는 주의 기준을 넘을 때 주의로 표시합니다.</p>
+    <p class="note">실측 연결: 수집 스크립트에서 1~5초마다 아래 함수를 호출하세요. 첫 호출 때 시뮬레이션이 멈추고 실측 모드로 바뀝니다.</p>
+    <pre>DemandApp.feed({ PLTCM: 21500, "1CGL": 4200, "2CGL": 4800, "3CGL": 5400,
+                 EGL: 2600, CAL: 3800, UTIL: 6500 }, Date.now());
+DemandApp.setNextCoil("high");   // "high" 고부하재 | "low" 저부하재</pre>
+    <p class="note">측정 이력과 설정은 이 브라우저에 자동 저장되어 새로고침하거나 브라우저를 다시 열어도 유지됩니다.</p>
+    <div class="reset-row">
+      <button type="button" class="btn" id="reset">저장된 데이터 지우기</button>
+      <span class="note" id="resetMsg"></span>
+    </div>
+  </details>
+</div>
+
+<!-- ===== 모델: DOM을 쓰지 않는 순수 로직 (Node에서도 실행 가능) ===== -->
+<script>
+const DemandModel = (() => {
+  "use strict";
+  const WIN = 15 * 60 * 1000, MIN = 60 * 1000, T = 900; // T: 구간 길이(초)
+  const MAX_DT = 10;          // 실측 샘플 간격 상한(초). 통신 끊김 시 과대 적산 방지 (F7-2)
+  const HISTORY_MAX = 96;     // 24시간
+  const LINES = [
+    { id: "PLTCM", name: "PLTCM" },
+    { id: "1CGL", name: "1CGL", base: 4200, amp: 520 },
+    { id: "2CGL", name: "2CGL", base: 4800, amp: 560 },
+    { id: "3CGL", name: "3CGL", base: 5400, amp: 620 },
+    { id: "EGL", name: "EGL", base: 2600, amp: 320 },
+    { id: "CAL", name: "CAL", base: 3800, amp: 450 },
+    { id: "UTIL", name: "Utility", base: 6500, amp: 380 },
+  ];
+  const IDS = LINES.map(l => l.id);
+  const DEFAULTS = { target: 50000, judge: 10, caution: 95, rHigh: 50, rLow: 90 };
+  const COIL_LOAD = { high: 23400, low: 14600, thread: 6800 };
+
+  // 구간: 매시 00/15/30/45분 시작. 샘플은 (t-dt, t]를 대표하므로 정확히 경계 시각의 샘플은 이전 구간 소속.
+  const windowStart = t => Math.floor((t - 1) / WIN) * WIN;
+
+  function newWindow(start) {
+    const zero = () => Object.fromEntries(IDS.map(id => [id, 0]));
+    return {
+      start,
+      energy: 0,            // 구간 누적 전력량 [kW·s]
+      lineE: zero(),        // 라인별 누적 전력량
+      secs: 0,              // 데이터가 있는 초
+      min: Array.from({ length: 15 }, () => ({ e: 0, s: 0, lineE: zero() })),
+      level: "ok", alarmed: false, acked: false, control: null,
+    };
+  }
+
+  function create(cfg) {
+    const S = { cfg, now: 0, cur: null, history: [], recent: [], nextCoil: "high", lastT: null };
+
+    // 확정: 데이터가 빈 시간(통신 끊김·중간 연결)은 그 구간의 실측 평균으로 채워 추정한다.
+    // coverage < 50%면 partial(신뢰 낮음)로 보고 금일 최대에서 뺀다.
+    function finalize(w) {
+      const cov = Math.min(1, w.secs / T), avg = w.secs ? w.energy / w.secs : 0;
+      S.history.unshift({
+        start: w.start,
+        demand: w.secs >= T ? w.energy / T : (w.energy + avg * (T - w.secs)) / T,
+        lineAvg: Object.fromEntries(IDS.map(id => [id, w.secs ? w.lineE[id] / w.secs : 0])),
+        alarmed: w.alarmed, control: !!w.control,
+        coverage: cov, estimated: w.secs < T - 20, partial: cov < 0.5,
+      });
+      if (S.history.length > HISTORY_MAX) S.history.length = HISTORY_MAX;
+    }
+
+    // 샘플 1개 적산. vals: {PLTCM: kW, ...}, dt: 샘플이 대표하는 초
+    function ingest(t, vals, dt) {
+      const ws = windowStart(t);
+      if (!S.cur || ws > S.cur.start) {
+        if (S.cur && S.cur.secs > 0) finalize(S.cur);
+        S.cur = newWindow(ws); // 새 구간 → 제어·경보 확인 자동 해제
+      }
+      const w = S.cur, mi = Math.min(14, Math.floor((t - 1 - ws) / MIN)), b = w.min[mi];
+      const clean = {};
+      let tot = 0;
+      for (const id of IDS) {
+        const v = Math.max(0, Number(vals[id]) || 0); // 음수·NaN·누락은 0
+        clean[id] = v; tot += v;
+        w.lineE[id] += v * dt; b.lineE[id] += v * dt;
+      }
+      w.energy += tot * dt; w.secs += dt;
+      b.e += tot * dt; b.s += dt;
+      S.recent.push({ t, dt, tot, v: clean });
+      while (S.recent.length && S.recent[0].t <= t - MIN) S.recent.shift();
+      S.now = t; S.lastT = t;
+      return evaluate();
+    }
+
+    // 실측 입력: 간격으로 dt 계산(첫 샘플 1초, 최대 10초). 시각이 역행·중복이면 무시
+    function feed(vals, t) {
+      if (!isFinite(t)) return null;
+      if (S.lastT != null && t <= S.lastT) return null;
+      const dt = S.lastT == null ? 1 : Math.min(MAX_DT, (t - S.lastT) / 1000);
+      return ingest(t, vals, dt);
+    }
+
+    // 최근 60초 가중 평균. id 없으면 합계
+    function recentAvg(id) {
+      let e = 0, s = 0;
+      for (const r of S.recent) { e += (id ? r.v[id] : r.tot) * r.dt; s += r.dt; }
+      return s ? e / s : 0;
+    }
+
+    // PRD 4장 계산식
+    function forecast() {
+      const w = S.cur;
+      if (!w) return null;
+      const elapsed = Math.min(T, (S.now - w.start) / 1000);
+      const rem = Math.max(0, T - elapsed);
+      const P = recentAvg();
+      // 경과 시간 중 데이터가 없는 초(통신 끊김, 구간 중간에 연결)는 구간 실측 평균으로 보정.
+      // 보정하지 않으면 빈 시간이 0 kW로 계산되어 예측이 낮아지고 경보를 놓친다.
+      const missing = Math.max(0, elapsed - w.secs);
+      const E = w.energy + (w.secs ? w.energy / w.secs : P) * missing;
+      const pred = (E + P * rem) / T;
+      const allowed = rem > 0 ? (cfg.target * T - E) / rem : null;
+      let need = allowed == null ? 0 : Math.max(0, P - allowed);
+      if (need < 0.5) need = 0; // 부동소수점 잔차(예: 5e-10 kW)를 0으로
+      const pl = recentAvg("PLTCM");
+      const rate = (S.nextCoil === "high" ? cfg.rHigh : cfg.rLow) / 100;
+      const cut = w.control ? 0 : pl * rate;
+      const predAfter = (E + (P - cut) * rem) / T;
+      return { elapsed, rem, P, pred, allowed, need, avg: w.secs ? w.energy / w.secs : 0,
+        missing, coverage: elapsed > 0 ? Math.min(1, w.secs / elapsed) : 1,
+        pl, rate, cut, plAfter: pl - cut, predAfter };
+    }
+
+    // 상태 판정: 판정 시점 이후 예측>목표 → crit, 예측≥주의기준 → warn
+    function evaluate() {
+      const w = S.cur;
+      if (!w) return null;
+      const f = forecast();
+      const judged = f.elapsed >= cfg.judge * 60;
+      // 화면에 보이는 값(1 kW 단위)으로 비교해야 "예측 50,000 / 목표 50,000"이 경보로 뜨지 않는다
+      const pred = Math.round(f.pred);
+      w.level = pred > cfg.target && judged ? "crit"
+        : pred >= cfg.target * cfg.caution / 100 ? "warn" : "ok";
+      if (w.level === "crit") w.alarmed = true;
+      return f;
+    }
+
+    // 가이드 적용(F4-5): 감소율·코일·시각을 구간에 기록. 다음 구간에서 자동 해제
+    function applyControl() {
+      const w = S.cur;
+      if (!w || w.control) return;
+      const f = forecast();
+      if (f.rem <= 0) return;
+      w.control = { rate: f.rate, coil: S.nextCoil, at: S.now, plBefore: f.pl };
+      w.acked = true;
+      evaluate();
+    }
+    // 해제하면 경보 확인도 풀어 여전히 초과 예상이면 경보음이 다시 울리게 한다
+    function releaseControl() { if (S.cur) { S.cur.control = null; S.cur.acked = false; evaluate(); } }
+    function ack() { if (S.cur) S.cur.acked = true; }
+
+    // 현재 구간을 이력으로 넘기고 비움 (오래 닫혀 있던 뒤 복원할 때)
+    function closeCurrent() {
+      if (S.cur && S.cur.secs > 0) finalize(S.cur);
+      S.cur = null; S.recent = [];
+    }
+    function reset() { Object.assign(S, { now: 0, cur: null, history: [], recent: [], lastT: null }); }
+
+    // 분별 집계 (차트용)
+    function minutes() {
+      const w = S.cur, out = [];
+      if (!w) return out;
+      let ce = 0, cs = 0;
+      w.min.forEach((b, i) => {
+        if (!b.s) return;
+        ce += b.e; cs += b.s;
+        out.push({ i, avg: b.e / b.s, runAvg: ce / cs, secs: b.s });
+      });
+      return out;
+    }
+
+    function lineAvgs(mode) {
+      const w = S.cur;
+      return LINES.map(l => ({ ...l, v: mode === "min" ? recentAvg(l.id) : (w && w.secs ? w.lineE[l.id] / w.secs : 0) }));
+    }
+
+    function todayMax(now) {
+      const d = new Date(now); d.setHours(0, 0, 0, 0);
+      return S.history.filter(h => h.start >= +d && !h.partial).reduce((a, b) => (!a || b.demand > a.demand ? b : a), null);
+    }
+
+    // 저장/복원 (F6). JSON으로 직렬화 가능한 값만 담는다
+    function serialize() {
+      return { now: S.now, cur: S.cur, history: S.history, recent: S.recent, nextCoil: S.nextCoil, lastT: S.lastT };
+    }
+    function restore(d) {
+      if (!d || !Array.isArray(d.history) || !Array.isArray(d.recent)) return false;
+      if (d.cur && (!Array.isArray(d.cur.min) || d.cur.min.length !== 15 || !isFinite(d.cur.energy))) return false;
+      Object.assign(S, {
+        now: +d.now || 0, cur: d.cur || null, history: d.history.slice(0, HISTORY_MAX), recent: d.recent,
+        nextCoil: d.nextCoil === "low" ? "low" : "high", lastT: d.lastT == null ? null : +d.lastT,
+      });
+      return true;
+    }
+
+    return { S, ingest, feed, forecast, evaluate, recentAvg, minutes, lineAvgs, todayMax,
+      applyControl, releaseControl, ack, closeCurrent, reset, serialize, restore };
+  }
+
+  // PRD F7-3 시뮬레이터. model.ingest만 호출하므로 실측 연동과 같은 경로를 탄다.
+  function createSimulator(model, rand = Math.random) {
+    const randn = () => { let u = 0, v = 0; while (!u) u = rand(); while (!v) v = rand(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+    const st = { lines: Object.fromEntries(LINES.filter(l => l.base).map(l => [l.id, l.base])),
+      pl: COIL_LOAD.high, coil: "high", coilLeft: 420, thread: 0 };
+    function step(t) {
+      const vals = {};
+      for (const l of LINES) {
+        if (!l.base) continue;
+        st.lines[l.id] += 0.04 * (l.base - st.lines[l.id]) + l.amp * 0.14 * randn();
+        vals[l.id] = st.lines[l.id];
+      }
+      if (--st.coilLeft <= 0) { // 코일 교체: 다음 코일이 현재 코일이 되고 통판 구간 진입
+        st.coil = model.S.nextCoil;
+        st.coilLeft = 300 + Math.floor(rand() * 300);
+        st.thread = 35 + Math.floor(rand() * 25);
+        model.S.nextCoil = rand() < 0.5 ? "high" : "low";
+      }
+      const goal = st.thread > 0 ? COIL_LOAD.thread : COIL_LOAD[st.coil];
+      if (st.thread > 0) st.thread--;
+      st.pl += 0.12 * (goal - st.pl) + 320 * randn();
+      const w = model.S.cur;
+      const inWin = w && w.control && windowStart(t) === w.start;
+      vals.PLTCM = Math.max(0, st.pl * (inWin ? 1 - w.control.rate : 1));
+      return model.ingest(t, vals, 1);
+    }
+    // from부터 end까지 1초씩 진행 (처음 실행·복원 시 공백 채우기)
+    function run(from, end) { for (let t = from; t < end;) { t += 1000; step(t); } }
+    // 처음 실행 시 1시간 전 구간 경계부터 생성 → 완전한 이력 4구간 + 현재 구간 일부
+    function prefill(end) { run(windowStart(end - 60 * MIN), end); }
+    return { st, step, run, prefill };
+  }
+
+  // 손계산 예제로 계산식 검증. 콘솔에서 DemandModel.selfTest()
+  function selfTest() {
+    const ws = windowStart(Date.UTC(2026, 9, 1, 4, 31)); // 13:30 KST 구간
+    const split = tot => ({ PLTCM: 20000, "1CGL": (tot - 20000) / 6, "2CGL": (tot - 20000) / 6, "3CGL": (tot - 20000) / 6,
+      EGL: (tot - 20000) / 6, CAL: (tot - 20000) / 6, UTIL: (tot - 20000) / 6 });
+    const run = (first9, last1, coil) => {
+      const m = create({ ...DEFAULTS });
+      m.S.nextCoil = coil;
+      let f;
+      for (let k = 1; k <= 600; k++) f = m.ingest(ws + k * 1000, split(k <= 540 ? first9 : last1), 1);
+      return { m, f, level: m.S.cur.level };
+    };
+    const rows = [];
+    let ok = true;
+    const check = (name, field, expected, got) => {
+      const pass = typeof expected === "number" ? Math.abs(got - expected) < 0.01 : got === expected;
+      ok = ok && pass;
+      rows.push({ case: name, field, expected, got: typeof got === "number" ? Math.round(got * 100) / 100 : got, pass });
+    };
+
+    // 9분 48,000 + 1분 52,000 → E=29,040,000. 예측=(E+52,000×300)/900=49,600 (99.2% → 주의)
+    let r = run(48000, 52000, "high");
+    check("주의(10분, 목표 이내)", "pred", 49600, r.f.pred);
+    check("주의(10분, 목표 이내)", "allowed", 53200, r.f.allowed);
+    check("주의(10분, 목표 이내)", "need", 0, r.f.need);
+    check("주의(10분, 목표 이내)", "level", "warn", r.level);
+    check("주의(10분, 목표 이내)", "predAfter", (29040000 + (52000 - 10000) * 300) / 900, r.f.predAfter);
+    // 9분 50,000 + 1분 53,000 → E=30,180,000. 예측=51,200 → 경보, 허용=49,400, 필요=3,600
+    r = run(50000, 53000, "high");
+    check("경보(10분, 목표 초과)", "pred", 51200, r.f.pred);
+    check("경보(10분, 목표 초과)", "allowed", 49400, r.f.allowed);
+    check("경보(10분, 목표 초과)", "need", 3600, r.f.need);
+    check("경보(10분, 목표 초과)", "level", "crit", r.level);
+    check("경보(10분, 목표 초과)", "predAfter", (30180000 + (53000 - 10000) * 300) / 900, r.f.predAfter);
+    // 저부하재 → PLTCM 90% 감소: 20,000×0.9=18,000
+    r = run(50000, 53000, "low");
+    check("경보 + 저부하재 90%", "predAfter", (30180000 + (53000 - 18000) * 300) / 900, r.f.predAfter);
+    // 같은 값이라도 9분59초(599초)에는 판정 전 → 주의
+    { const m = create({ ...DEFAULTS }); let f;
+      for (let k = 1; k <= 599; k++) f = m.ingest(ws + k * 1000, split(k <= 540 ? 50000 : 53000), 1);
+      check("판정 1초 전", "level", "warn", m.S.cur.level); }
+    // 가이드 적용 → 기록되고, 다음 구간에서 자동 해제
+    r = run(50000, 53000, "high");
+    r.m.applyControl();
+    check("가이드 적용", "control.rate", 0.5, r.m.S.cur.control && r.m.S.cur.control.rate);
+    r.m.releaseControl();
+    check("가이드 적용", "해제 시 경보 재개", false, r.m.S.cur.acked);
+    r.m.applyControl();
+    r.m.ingest(ws + WIN + 1000, split(40000), 1);
+    check("가이드 적용", "다음 구간 자동 해제", null, r.m.S.cur.control);
+    check("가이드 적용", "이력에 제어 기록", true, r.m.S.history[0].control);
+    // 실측 feed: 간격 30초 → dt 10초로 제한, 역행 시각 무시, 음수·NaN은 0
+    { const m = create({ ...DEFAULTS });
+      m.feed(split(40000), ws + 1000);
+      m.feed(split(40000), ws + 31000);
+      check("feed", "dt 상한 10초", 11, m.S.cur.secs);
+      check("feed", "역행 시각 무시", null, m.feed(split(40000), ws + 20000));
+      m.feed({ PLTCM: -500, "1CGL": NaN }, ws + 32000);
+      check("feed", "음수·NaN → 0", 0, m.S.recent[m.S.recent.length - 1].tot); }
+    // 저장 → 복원 왕복
+    { const a = run(50000, 53000, "low").m, b = create({ ...DEFAULTS });
+      b.restore(JSON.parse(JSON.stringify(a.serialize())));
+      check("저장/복원", "예측 동일", a.forecast().pred, b.forecast().pred);
+      check("저장/복원", "다음 코일 유지", "low", b.S.nextCoil);
+      check("저장/복원", "손상 데이터 거부", false, create({ ...DEFAULTS }).restore({ history: "x" })); }
+    // 이력 상한 96
+    { const m = create({ ...DEFAULTS });
+      for (let i = 0; i < 100; i++) m.ingest(ws + i * WIN + 1000, split(40000), 1);
+      check("이력", "최대 96구간", 96, m.S.history.length); }
+    // 예측이 목표와 정확히 같으면(손계산 50,000) 경보가 아니라 주의. 10분 평균 49,000 + 최근 1분 52,000
+    r = run(48666 + 2 / 3, 52000, "high");
+    check("예측 = 목표", "level", "warn", r.level);
+    check("예측 = 목표", "need", 0, r.f.need);
+    // 실측 5초 주기, 실제 내내 52,000. 4~6분 사이 120초 통신 끊김 → 누락을 평균으로 보정
+    { const m = create({ ...DEFAULTS }); let f;
+      for (let t = 5; t <= 600; t += 5) { if (t > 240 && t <= 360) continue; f = m.feed(split(52000), ws + t * 1000); }
+      check("통신 끊김 120초", "pred", 52000, f.pred);
+      check("통신 끊김 120초", "level", "crit", m.S.cur.level);
+      for (let t = 605; t <= 905; t += 5) m.feed(split(t <= 900 ? 52000 : 40000), ws + t * 1000);
+      check("통신 끊김 120초", "확정 수요전력", 52000, m.S.history[0].demand);
+      check("통신 끊김 120초", "금일 최대 포함", true, !!m.todayMax(ws + 905 * 1000)); }
+    // 실측을 구간 7분째에 처음 연결 (앞 7분 데이터 없음)
+    { const m = create({ ...DEFAULTS }); let f;
+      for (let t = 420; t <= 600; t += 5) f = m.feed(split(52000), ws + t * 1000);
+      check("구간 중간 연결", "pred", 52000, f.pred);
+      check("구간 중간 연결", "level", "crit", m.S.cur.level); }
+    // 경계: 정확히 :45:00.000 샘플은 13:30 구간, +1ms는 13:45 구간
+    check("구간 경계", "hh:45:00.000 소속", true, windowStart(ws + WIN) === ws && windowStart(ws + WIN + 1) === ws + WIN);
+    return { ok, rows };
+  }
+
+  return { WIN, MIN, T, LINES, IDS, DEFAULTS, windowStart, create, createSimulator, selfTest };
+})();
+if (typeof module !== "undefined") module.exports = DemandModel;
+</script>
+
+<!-- ===== 화면 ===== -->
+<script>
+(() => {
+  "use strict";
+  const { MIN, WIN, DEFAULTS, windowStart } = DemandModel;
+  const CFG_KEY = "sc-demand-cfg", STATE_KEY = "sc-demand-state-v2", PREF_KEY = "sc-demand-prefs", LOCK_KEY = "sc-demand-lock";
+  const STALE_MS = 15000;           // 실측 모드에서 이 시간 넘게 수신 없으면 끊김 표시
+  const CATCHUP_MAX = 3 * 60 * MIN; // 시뮬레이션 복원 시 채울 최대 공백
+  const LOCK_STALE = 12000;         // 운영 탭 신호가 이 시간 넘게 끊기면 다른 탭이 이어받음
+  const TAB_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+  const cfg = { ...DEFAULTS };
+  const limits = { target: [1000, 1e7], judge: [1, 14], caution: [50, 100], rHigh: [0, 100], rLow: [0, 100] };
+  function applyCfg(src) {
+    if (!src) return;
+    for (const k of Object.keys(limits)) {
+      if (src[k] == null || src[k] === "") continue; // Number(null)은 0이 되므로 빈 값은 건너뛴다
+      const v = Number(src[k]);
+      if (isFinite(v)) { const [a, b] = limits[k]; cfg[k] = Math.min(b, Math.max(a, k === "judge" ? Math.round(v) : v)); }
+    }
+  }
+  const store = {
+    get(k) {
+      let raw;
+      try { raw = localStorage.getItem(k); } catch (e) { UI.saveError = true; return null; } // 저장소 차단
+      try { return JSON.parse(raw || "null"); } catch (e) { return null; }                 // 손상된 값은 무시
+    },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); UI.saveError = false; return true; } catch (e) { UI.saveError = true; return false; } },
+    del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+  };
+  const UI = { mode: "sim", speed: 1, paused: false, sound: false, audioLocked: false, lastBeep: 0, hover: null, barMode: "win",
+    leader: true, saveError: false, lastAnnounce: "", gestureUnlock: 0 };
+  applyCfg(store.get(CFG_KEY));
+  const model = DemandModel.create(cfg);
+  const sim = DemandModel.createSimulator(model);
+
+  const $ = id => document.getElementById(id);
+  const fmt = n => (n == null || !isFinite(n)) ? "-" : Math.round(n).toLocaleString("ko-KR");
+  const pad = n => String(n).padStart(2, "0");
+  const hm = t => { const d = new Date(t); return pad(d.getHours()) + ":" + pad(d.getMinutes()); };
+  const hms = t => hm(t) + ":" + pad(new Date(t).getSeconds());
+  const LV = { ok: ["정상", "var(--good)"], warn: ["주의", "var(--warn)"], crit: ["경보", "var(--crit)"] };
+
+  // ---------- 탭 하나만 운영 (여러 탭이 서로 저장본을 덮어쓰지 않게) ----------
+  // 운영 탭(leader)만 시뮬레이션을 돌리고 저장한다. 나머지 탭은 저장본을 받아 보여주기만 한다.
+  const lockFresh = l => l && Date.now() - l.t <= LOCK_STALE;
+  const ownsLock = () => { const l = store.get(LOCK_KEY); return !lockFresh(l) || l.id === TAB_ID; };
+  const claimLock = () => store.set(LOCK_KEY, { id: TAB_ID, t: Date.now() });
+  function becomeLeader() {
+    loadState(true); // 이전 운영 탭이 마지막으로 저장한 상태부터 이어간다
+    UI.leader = true; claimLock(); saveState(); render();
+  }
+  function becomeFollower() { UI.leader = false; render(); }
+
+  // ---------- 저장/복원 (F6) ----------
+  let noSave = false;
+  function saveState() {
+    if (noSave || !UI.leader) return;
+    if (!ownsLock()) { becomeFollower(); return; } // 다른 탭이 운영을 가져갔으면 저장하지 않는다
+    store.set(STATE_KEY, { v: 2, mode: UI.mode, barMode: UI.barMode, model: model.serialize(), sim: sim.st });
+  }
+  const saveCfg = () => store.set(CFG_KEY, cfg);
+  const savePrefs = () => store.set(PREF_KEY, { sound: UI.sound });
+
+  // catchUp: 운영 탭이 열릴 때만 닫혀 있던 시간을 시뮬레이션으로 채운다
+  function loadState(catchUp) {
+    const d = store.get(STATE_KEY);
+    if (!d || d.v !== 2 || !model.restore(d.model)) return false;
+    UI.mode = d.mode === "live" ? "live" : "sim";
+    UI.barMode = d.barMode === "min" ? "min" : "win";
+    if (d.sim) Object.assign(sim.st, d.sim);
+    if (catchUp && UI.mode === "sim") {
+      const end = Math.floor(Date.now() / 1000) * 1000;
+      if (model.S.now > end + MIN) { model.reset(); sim.prefill(end); return true; } // 10×/60×로 미래까지 간 예시 데이터는 새로 만든다
+      let from = model.S.now || end;
+      if (end - from > CATCHUP_MAX) { model.closeCurrent(); from = windowStart(end - CATCHUP_MAX); }
+      sim.run(from, end);
+    }
+    return true;
+  }
+
+  // ---------- 렌더링 ----------
+  function render() {
+    const S = model.S, w = S.cur, f = model.forecast();
+    $("mode").textContent = UI.mode === "sim" ? "시뮬레이션 데이터" : "실측 데이터";
+    $("speed").hidden = $("pause").hidden = UI.mode !== "sim";
+    $("followBar").hidden = UI.leader;
+    $("saveWarn").hidden = !UI.saveError;
+    for (const id of ["apply", "ack", "coilHigh", "coilLow", "sp1", "sp10", "sp60", "pause", "reset", ...Object.keys(fields)]) $(id).disabled = !UI.leader;
+    renderSound();
+    if (!w) { $("sTitle").textContent = "데이터 대기"; $("sText").textContent = "첫 측정값을 기다리는 중입니다."; $("strip").dataset.level = "stale"; return; }
+    $("clock").textContent = hms(S.now);
+    renderStatus(f);
+    renderKpis(f);
+    renderChart(f);
+    renderGuide(f);
+    renderBars();
+    renderHistory();
+    if (w.level === "crit" && !w.acked && UI.sound && Date.now() - UI.lastBeep > 8000) { beep(); UI.lastBeep = Date.now(); }
+  }
+
+  const KW = n => `${fmt(n)}<small>kW</small>`;
+
+  function renderStatus(f) {
+    const w = model.S.cur, win = `${hm(w.start)}–${hm(w.start + WIN)}`;
+    const pct = (f.pred / cfg.target * 100).toFixed(1), judgeLeft = cfg.judge * 60 - f.elapsed;
+    const stale = UI.mode === "live" && Date.now() - model.S.lastT > STALE_MS;
+    const level = stale ? "stale" : w.level;
+    $("strip").dataset.level = level;
+    $("sIcon").style.setProperty("--c", stale ? "var(--muted)" : LV[w.level][1]);
+    $("sIcon").textContent = level === "ok" ? "✓" : stale ? "?" : "!";
+    $("ack").hidden = !(w.level === "crit" && !w.acked);
+    let title, text;
+    if (stale) {
+      title = "수신 끊김";
+      text = `마지막 측정값 ${hms(model.S.lastT)}. 수집 장치 연결을 확인하세요. 아래 값은 마지막 수신 기준입니다.`;
+    } else if (w.level === "crit") {
+      title = w.control ? "경보 · PLTCM 제어 중" : "경보 · 15분 수요전력 목표 초과 예상";
+      text = `${win} 예측 ${fmt(f.pred)} kW (목표 ${pct}%). 남은 ${Math.ceil(f.rem / 60)}분 동안 평균 ${fmt(f.allowed)} kW 이하로 운전해야 합니다. 필요 감축 ${fmt(f.need)} kW.`;
+      if (UI.sound && UI.audioLocked) text += " 경보음이 아직 꺼져 있습니다. 화면을 한 번 클릭하세요.";
+    } else if (w.level === "warn") {
+      title = judgeLeft > 0 ? `주의 · ${cfg.judge}분 판정 ${Math.ceil(judgeLeft / 60)}분 전` : "주의 · 목표 근접";
+      text = `${win} 예측 ${fmt(f.pred)} kW, 목표의 ${pct}%. 다음 코일과 PLTCM 부하를 확인하세요.`;
+    } else {
+      title = "정상";
+      text = `${win} 예측 ${fmt(f.pred)} kW, 목표의 ${pct}%. ${judgeLeft > 0 ? `${cfg.judge}분 판정까지 ${Math.ceil(judgeLeft / 60)}분` : "판정 시점 경과, 목표 이내"}.`;
+    }
+    // 데이터가 빈 시간(통신 끊김·구간 중간 연결)은 평균으로 보정했다고 알린다
+    if (f.missing >= 5) text += ` 측정값이 없는 ${Math.round(f.missing)}초는 구간 평균으로 보정했습니다(데이터 ${Math.round(f.coverage * 100)}%).`;
+    $("sTitle").textContent = title;
+    $("sText").textContent = text;
+    if (title !== UI.lastAnnounce) { UI.lastAnnounce = title; $("srLive").textContent = title; }
+  }
+
+  function renderKpis(f) {
+    const S = model.S, w = S.cur, pct = f.pred / cfg.target * 100;
+    $("kNow").innerHTML = KW(f.P);
+    $("kNowD").textContent = "순시 " + fmt(S.recent.length ? S.recent[S.recent.length - 1].tot : 0) + " kW";
+    $("kAvg").innerHTML = KW(f.avg);
+    $("kAvgD").textContent = `${hm(w.start)}–${hm(w.start + WIN)} · 경과 ${Math.floor(f.elapsed / 60)}분 ${pad(Math.floor(f.elapsed % 60))}초`;
+    $("kPred").innerHTML = KW(f.pred);
+    $("kPredD").textContent = `목표 ${fmt(cfg.target)} kW의 ${pct.toFixed(1)}%`;
+    $("kMeter").dataset.level = w.level;
+    $("kMeter").firstElementChild.style.width = Math.min(100, pct) + "%";
+    $("kAllow").innerHTML = f.allowed == null ? "-" : KW(Math.max(0, f.allowed));
+    $("kAllowD").textContent = f.allowed == null ? "구간 종료" : f.need > 0 ? `현재보다 ${fmt(f.need)} kW 감축 필요` : `여유 ${fmt(Math.max(0, f.allowed - f.P))} kW`;
+    const mx = model.todayMax(S.now);
+    $("kMax").innerHTML = mx ? KW(mx.demand) : "-";
+    $("kMaxD").textContent = mx ? `${hm(mx.start)}–${hm(mx.start + WIN)} 구간${mx.estimated ? " (보정)" : ""}` : "완료된 구간 없음";
+  }
+
+  function niceStep(range) {
+    for (const s of [500, 1000, 2000, 2500, 5000, 10000, 20000]) if (range / s <= 6) return s;
+    return 50000;
+  }
+
+  // F1 차트: 분 평균(점+선), 누적 평균(굵은 선), 예측(점선), 목표(빨간 점선), 판정 이후 음영
+  function renderChart(f) {
+    const w = model.S.cur, svg = $("chart");
+    const W = Math.max(320, $("chartBox").clientWidth), H = W < 520 ? 260 : 320;
+    const m = { l: 58, r: 70, t: 14, b: 30 }, iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const curMin = Math.min(14, Math.floor(Math.max(0, f.elapsed - 0.001) / 60));
+    const mins = model.minutes();
+    const pts = mins.map(x => ({ i: x.i, x: x.i + 0.5, y: x.avg, run: x.runAvg, partial: x.i === curMin && f.rem > 0 }));
+    const run = mins.map(x => ({ x: x.i === curMin ? f.elapsed / 60 : x.i + 1, y: x.runAvg }));
+    const vals = pts.map(p => p.y).concat([cfg.target, f.pred]);
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    const step = niceStep((hi - lo) * 1.3 || 5000);
+    lo = Math.max(0, Math.floor((lo - step * 0.4) / step) * step); hi = Math.ceil((hi + step * 0.4) / step) * step;
+    const X = v => m.l + v / 15 * iw, Y = v => m.t + (1 - (v - lo) / (hi - lo)) * ih;
+    const mono = `font-family="var(--font-mono)"`;
+    let g = `<rect x="${X(cfg.judge)}" y="${m.t}" width="${X(15) - X(cfg.judge)}" height="${ih}" fill="var(--sunk)"/>`;
+    for (let v = lo; v <= hi + 1; v += step) {
+      g += `<line x1="${m.l}" x2="${m.l + iw}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--grid)"/>`;
+      g += `<text x="${m.l - 8}" y="${Y(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)" ${mono}>${fmt(v)}</text>`;
+    }
+    g += `<line x1="${X(cfg.judge)}" x2="${X(cfg.judge)}" y1="${m.t}" y2="${m.t + ih}" stroke="var(--muted)" stroke-dasharray="2 3"/>`;
+    g += `<text x="${X(cfg.judge) + 6}" y="${m.t + 13}" font-size="11" font-weight="600" fill="var(--ink-2)">${cfg.judge}분 판정</text>`;
+    for (let i = 0; i <= 15; i++) {
+      const major = i % 5 === 0;
+      g += `<line x1="${X(i)}" x2="${X(i)}" y1="${m.t + ih}" y2="${m.t + ih + (major ? 6 : 3)}" stroke="var(--muted)"/>`;
+      if (major) g += `<text x="${X(i)}" y="${m.t + ih + 20}" text-anchor="middle" font-size="11" fill="var(--muted)" ${mono}>${hm(w.start + i * MIN)}</text>`;
+    }
+    g += `<line x1="${m.l}" x2="${m.l + iw}" y1="${m.t + ih}" y2="${m.t + ih}" stroke="var(--line)"/>`;
+    g += `<line x1="${m.l}" x2="${m.l + iw}" y1="${Y(cfg.target)}" y2="${Y(cfg.target)}" stroke="var(--crit)" stroke-width="1.5" stroke-dasharray="6 4"/>`;
+    // 목표 라벨은 그래프 안 왼쪽 위에 둔다. 오른쪽 끝의 예측 라벨과 예측≈목표일 때 겹치지 않게
+    g += `<text class="halo" x="${m.l + 6}" y="${Y(cfg.target) - 6}" font-size="11" font-weight="600" fill="var(--ink-2)">목표 <tspan ${mono}>${fmt(cfg.target)}</tspan></text>`;
+    if (pts.length) {
+      g += `<polyline fill="none" stroke="var(--series-2)" stroke-width="1.5" stroke-linejoin="round" points="${pts.map(p => X(p.x) + "," + Y(p.y)).join(" ")}"/>`;
+      for (const p of pts) g += p.partial
+        ? `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="3.5" fill="var(--panel)" stroke="var(--series-2)" stroke-width="1.5"/>`
+        : `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="4" fill="var(--series-2)" stroke="var(--panel)" stroke-width="2"/>`;
+      const rp = [{ x: 0, y: run[0].y }].concat(run), last = run[run.length - 1];
+      g += `<polyline fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="${rp.map(p => X(p.x) + "," + Y(p.y)).join(" ")}"/>`;
+      if (f.rem > 0) {
+        const pc = w.level === "crit" ? "var(--crit)" : "var(--accent)";
+        g += `<line x1="${X(last.x)}" y1="${Y(last.y)}" x2="${X(15)}" y2="${Y(f.pred)}" stroke="${pc}" stroke-width="2.5" stroke-dasharray="1 5" stroke-linecap="round"/>`;
+        g += `<circle cx="${X(15)}" cy="${Y(f.pred)}" r="5.5" fill="${pc}" stroke="var(--panel)" stroke-width="2"/>`;
+        g += `<text x="${X(15) + 10}" y="${Y(f.pred) - 4}" font-size="11" fill="var(--ink-2)">예측</text>`;
+        g += `<text x="${X(15) + 10}" y="${Y(f.pred) + 11}" font-size="12" font-weight="600" fill="var(--ink)" ${mono}>${(f.pred / 1000).toFixed(1)}k</text>`;
+      }
+      g += `<circle cx="${X(last.x)}" cy="${Y(last.y)}" r="5" fill="var(--accent)" stroke="var(--panel)" stroke-width="2"/>`;
+    }
+    if (UI.hover != null) g += `<line x1="${X(UI.hover + 0.5)}" x2="${X(UI.hover + 0.5)}" y1="${m.t}" y2="${m.t + ih}" stroke="var(--ink-2)" stroke-width="1"/>`;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.innerHTML = g;
+    svg._geo = { m, iw, X, pts };
+    $("chartTitle").textContent = `15분 구간 분당 평균전력 · ${hm(w.start)}–${hm(w.start + WIN)}`;
+    renderTip();
+  }
+
+  function renderTip() {
+    const tip = $("tip"), svg = $("chart"), geo = svg._geo;
+    const p = geo && UI.hover != null && geo.pts.find(q => q.i === UI.hover);
+    if (!p) { tip.hidden = true; return; }
+    const w = model.S.cur;
+    tip.innerHTML = `<b>${hm(w.start + p.i * MIN)}–${hm(w.start + (p.i + 1) * MIN)}${p.partial ? " (진행 중)" : ""}</b>
+      <div><span>분 평균</span><span class="num">${fmt(p.y)} kW</span></div>
+      <div><span>구간 누적 평균</span><span class="num">${fmt(p.run)} kW</span></div>
+      <div><span>목표 대비</span><span class="num">${(p.y / cfg.target * 100).toFixed(1)}%</span></div>`;
+    tip.hidden = false;
+    const box = $("chartBox").clientWidth, scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+    let x = geo.X(p.x) * scale + 12;
+    if (x + tip.offsetWidth > box) x = geo.X(p.x) * scale - tip.offsetWidth - 12;
+    tip.style.left = Math.max(0, x) + "px";
+  }
+
+  function renderGuide(f) {
+    const w = model.S.cur, high = model.S.nextCoil === "high", ctl = w.control;
+    $("coilHigh").setAttribute("aria-pressed", high); $("coilLow").setAttribute("aria-pressed", !high);
+    $("guide").dataset.active = w.level === "crit" && !ctl ? "crit" : "";
+    const st = $("gState");
+    if (ctl) {
+      // 적용 중에는 적용 당시 감소율·코일을 보여준다. 이후 다음 코일을 바꿔도 머리글이 달라지지 않게
+      $("gRate").textContent = Math.round(ctl.rate * 100) + "%";
+      $("gLbl").textContent = `${ctl.coil === "high" ? "고부하재" : "저부하재"} 기준으로 ${hm(ctl.at)}에 적용 중`;
+      st.textContent = `제어 중 ${Math.round(ctl.rate * 100)}%`;
+      st.style.setProperty("--c", "var(--accent)");
+      const settled = model.S.now - ctl.at >= MIN; // 최근 1분 평균이 제어 후 값으로 바뀌는 데 1분 걸린다
+      $("gNow").textContent = fmt(f.pl) + " kW"; $("gAfter").textContent = "적용 중";
+      $("gCut").textContent = settled ? `−${fmt(Math.max(0, ctl.plBefore - f.pl))} kW (실적)` : "집계 중 (1분 평균)";
+      $("gPred").textContent = `${fmt(f.pred)} kW (${(f.pred / cfg.target * 100).toFixed(1)}%)`;
+    } else {
+      $("gRate").textContent = Math.round(f.rate * 100) + "%";
+      $("gLbl").textContent = `다음 코일 ${high ? "고부하재" : "저부하재"} 기준 권장 조치`;
+      st.textContent = w.level === "crit" ? "조치 필요" : w.level === "warn" ? "준비" : "대기";
+      st.style.setProperty("--c", LV[w.level][1]);
+      $("gNow").textContent = fmt(f.pl) + " kW";
+      $("gAfter").textContent = fmt(f.plAfter) + " kW";
+      $("gCut").textContent = "−" + fmt(f.cut) + " kW";
+      $("gPred").textContent = `${fmt(f.predAfter)} kW (${(f.predAfter / cfg.target * 100).toFixed(1)}%)`;
+    }
+    $("gNeed").textContent = f.need > 0 ? fmt(f.need) + " kW" : "없음";
+    const after = ctl ? f.pred : f.predAfter;
+    let c, icon, text;
+    if (f.rem <= 0) { c = "var(--muted)"; icon = "–"; text = "구간이 끝났습니다. 다음 구간에서 다시 판정합니다."; }
+    else if (w.level !== "crit" && !ctl) { c = "var(--good)"; icon = "✓"; text = `현재 경보 없음. ${cfg.judge}분 판정에서 경보가 나면 가이드대로 PLTCM 부하를 줄이세요.`; }
+    else if (Math.round(after) <= cfg.target) { c = "var(--good)"; icon = "✓"; text = ctl ? `제어 후 예측 ${fmt(after)} kW로 목표 이내입니다. 구간 종료까지 유지하세요.` : `가이드대로 줄이면 15분 수요전력이 목표 이내(${fmt(after)} kW)로 들어옵니다.`; }
+    else {
+      c = "var(--crit)"; icon = "!";
+      text = `${ctl ? "제어 후에도" : "가이드 적용 후에도"} 목표를 ${fmt(after - cfg.target)} kW 넘습니다. 다른 라인에서 남은 시간 동안 평균 ${fmt((after - cfg.target) * 900 / f.rem)} kW 추가 감축이 필요합니다.`;
+    }
+    if (ctl && ctl.coil !== model.S.nextCoil) text += ` 다음 코일 변경(${high ? "고부하재" : "저부하재"})은 제어를 해제하고 다시 적용하면 반영됩니다.`;
+    const v = $("gVerdict");
+    v.innerHTML = `<span class="dot" aria-hidden="true">${icon}</span><span></span>`;
+    v.firstElementChild.style.setProperty("--c", c);
+    v.lastElementChild.textContent = text;
+    const btn = $("apply");
+    btn.textContent = ctl ? "제어 해제" : UI.mode === "sim" ? "가이드 적용 (시뮬레이션)" : "가이드 적용 기록";
+    btn.classList.toggle("primary", !ctl);
+    if (f.rem <= 0) btn.disabled = true;
+    $("gRule").textContent = `기준: 다음 코일 고부하재 ${cfg.rHigh}% 감소, 저부하재 ${cfg.rLow}% 감소. 제어는 다음 15분 구간 시작 시 자동 해제됩니다.`;
+  }
+
+  // F3 라인별 막대: 고정 순서, 0 기준
+  function renderBars() {
+    const data = model.lineAvgs(UI.barMode), total = data.reduce((a, b) => a + b.v, 0);
+    const maxV = Math.max(1, ...data.map(d => d.v)), step = niceStep(maxV), top = Math.ceil(maxV / step) * step;
+    $("bars").innerHTML = data.map(d => `<div class="bar" title="${d.name} ${fmt(d.v)} kW">
+        <span class="n">${d.name}${d.id === "PLTCM" ? '<span class="tag">제어</span>' : ""}</span>
+        <span class="tr"><i style="width:${d.v / top * 100}%"></i></span>
+        <span class="val num">${fmt(d.v)} kW</span>
+        <span class="pc num">${total ? (d.v / total * 100).toFixed(1) : "0.0"}%</span></div>`).join("");
+    // 좁은 화면에서는 눈금 라벨 간격이 44px 이상 되도록 건너뛴다
+    let lstep = step;
+    const tw = $("ticks").clientWidth || 300;
+    while (tw / (top / lstep) < 44 && lstep < top) lstep *= 2;
+    let t = "";
+    for (let v = 0; v <= top; v += lstep) t += `<span style="left:${v / top * 100}%">${v >= 1000 ? v / 1000 + "k" : v}</span>`;
+    $("ticks").innerHTML = t;
+    $("barTotal").textContent = fmt(total) + " kW";
+    $("bmWin").setAttribute("aria-pressed", UI.barMode === "win"); $("bmMin").setAttribute("aria-pressed", UI.barMode === "min");
+  }
+
+  function renderHistory() {
+    const H = model.S.history;
+    $("histNote").textContent = UI.mode === "sim" ? "시뮬레이션 예시" : "";
+    if (!H.length) { $("hist").innerHTML = `<tr><td colspan="4" class="note">완료된 구간이 아직 없습니다. 15분이 지나면 첫 기록이 쌓입니다.</td></tr>`; return; }
+    $("hist").innerHTML = H.slice(0, 10).map(h => {
+      const p = h.demand / cfg.target * 100;
+      const [lbl, c] = Math.round(h.demand) > cfg.target ? ["초과", "var(--crit)"] : p >= cfg.caution ? ["주의", "var(--warn)"] : ["정상", "var(--good)"];
+      const cov = h.coverage != null ? Math.round(h.coverage * 100) : null;
+      const flags = [h.alarmed && "경보", h.control && "제어",
+        h.partial ? `부분${cov != null ? " " + cov + "%" : ""}` : h.estimated && `보정 ${cov}%`].filter(Boolean).join("·");
+      return `<tr><td class="num">${hm(h.start)}–${hm(h.start + WIN)}</td><td class="r num">${fmt(h.demand)}</td><td class="r num">${p.toFixed(1)}%</td>
+        <td><span class="pill" style="--c:${c}">${lbl}</span>${flags ? `<span class="flag">${flags}</span>` : ""}</td></tr>`;
+    }).join("");
+  }
+
+  // ---------- 경보음 (F2-3, F2-4) ----------
+  // 브라우저는 사용자가 화면을 한 번 누르기 전에는 소리를 막는다. 새로고침 후에도 설정은 기억하고,
+  // 첫 클릭·키 입력 때 자동으로 소리를 연다.
+  let ac = null;
+  function unlockAudio() {
+    try {
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      const p = ac.resume();
+      const done = () => { UI.audioLocked = ac.state !== "running"; renderSound(); };
+      if (p && p.then) p.then(done, done); else done();
+    } catch (e) { UI.audioLocked = true; }
+  }
+  function beep() {
+    if (!ac || ac.state !== "running") return;
+    const t0 = ac.currentTime;
+    [0, 0.28, 0.56].forEach(d => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = "square"; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t0 + d); g.gain.exponentialRampToValueAtTime(0.12, t0 + d + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.2);
+      o.connect(g).connect(ac.destination); o.start(t0 + d); o.stop(t0 + d + 0.22);
+    });
+  }
+  function renderSound() {
+    const b = $("sound"), locked = UI.sound && UI.audioLocked;
+    b.textContent = !UI.sound ? "경보음 꺼짐" : locked ? "경보음: 화면 클릭 필요" : "경보음 켜짐";
+    b.setAttribute("aria-pressed", UI.sound);
+    b.classList.toggle("need", locked);
+  }
+
+  // ---------- 조작 ----------
+  function setNextCoil(v) { if (v === "high" || v === "low") { model.S.nextCoil = v; if (model.S.cur) render(); saveState(); } }
+
+  $("speed").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    UI.speed = +b.dataset.v;
+    for (const x of $("speed").querySelectorAll("button")) x.setAttribute("aria-pressed", x === b);
+  });
+  $("pause").addEventListener("click", () => { UI.paused = !UI.paused; $("pause").textContent = UI.paused ? "재개" : "일시정지"; });
+  $("sound").addEventListener("click", () => {
+    if (Date.now() - UI.gestureUnlock < 1500) { UI.gestureUnlock = 0; return; } // 이 클릭은 소리 열기용이었다. 끄지 않는다
+    UI.sound = !UI.sound;
+    if (UI.sound) { unlockAudio(); beep(); }
+    savePrefs(); renderSound();
+  });
+  const firstGesture = e => {
+    if (!(UI.sound && UI.audioLocked)) return;
+    if (e.target.closest && e.target.closest("#sound")) UI.gestureUnlock = Date.now();
+    unlockAudio();
+  };
+  document.addEventListener("pointerdown", firstGesture);
+  document.addEventListener("keydown", firstGesture);
+  $("ack").addEventListener("click", () => { model.ack(); render(); saveState(); });
+  $("coilSeg").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setNextCoil(b.dataset.v); });
+  $("barMode").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { UI.barMode = b.dataset.v; render(); } });
+  $("apply").addEventListener("click", () => {
+    if (model.S.cur && model.S.cur.control) model.releaseControl(); else model.applyControl();
+    render(); saveState();
+  });
+  $("takeOver").addEventListener("click", becomeLeader);
+  $("chartBox").addEventListener("mousemove", e => {
+    const svg = $("chart"), geo = svg._geo; if (!geo) return;
+    const r = svg.getBoundingClientRect(), x = (e.clientX - r.left) / (r.width / svg.viewBox.baseVal.width);
+    const i = Math.floor((x - geo.m.l) / geo.iw * 15);
+    const h = geo.pts.some(p => p.i === i) ? i : null;
+    if (h !== UI.hover) { UI.hover = h; render(); }
+  });
+  $("chartBox").addEventListener("mouseleave", () => { UI.hover = null; render(); });
+
+  const fields = { cTarget: "target", cJudge: "judge", cCaution: "caution", cHigh: "rHigh", cLow: "rLow" };
+  const showCfg = () => { for (const [id, key] of Object.entries(fields)) $(id).value = cfg[key]; };
+  for (const [id, key] of Object.entries(fields)) {
+    $(id).addEventListener("change", () => {
+      applyCfg({ ...cfg, [key]: parseFloat($(id).value) });
+      showCfg(); saveCfg(); model.evaluate(); render();
+    });
+  }
+  showCfg();
+
+  let resetArmed = false;
+  $("reset").addEventListener("click", () => {
+    if (!resetArmed) { resetArmed = true; $("reset").textContent = "한 번 더 누르면 삭제"; $("resetMsg").textContent = "이력과 설정이 모두 지워집니다."; return; }
+    noSave = true; // 이후 pagehide 저장이 지운 데이터를 되살리지 않도록
+    for (const k of [STATE_KEY, CFG_KEY, PREF_KEY, LOCK_KEY]) store.del(k);
+    location.reload();
+  });
+
+  // 다른 탭의 변경 반영: 보기 전용 탭은 저장본을, 모든 탭은 설정을 따라간다
+  window.addEventListener("storage", e => {
+    if (e.key === STATE_KEY) {
+      if (e.newValue == null) { location.reload(); return; } // 다른 탭에서 데이터 지우기
+      if (!UI.leader) { loadState(false); render(); }
+    } else if (e.key === CFG_KEY && e.newValue) {
+      applyCfg(store.get(CFG_KEY)); showCfg(); model.evaluate(); render();
+    }
+  });
+
+  // ---------- 실측 연동 (F7) ----------
+  function toTime(time) {
+    if (time == null) return Date.now();
+    if (time instanceof Date) return +time;
+    if (typeof time === "string") return Date.parse(time); // ISO 문자열 허용
+    return +time;
+  }
+  window.DemandApp = {
+    feed(values, time) {
+      const t = toTime(time);
+      if (!isFinite(t)) { console.warn("DemandApp.feed: 시각을 해석할 수 없습니다", time); return null; }
+      if (!UI.leader) { UI.leader = true; claimLock(); } // 데이터를 받는 탭이 운영 탭이 된다
+      if (UI.mode !== "live") { UI.mode = "live"; model.reset(); } // 시뮬레이션 데이터는 버린다
+      const f = model.feed(values || {}, t);
+      render();
+      return f;
+    },
+    setNextCoil,
+    get state() { return { mode: UI.mode, leader: UI.leader, config: { ...cfg }, forecast: model.forecast(), window: model.S.cur, history: model.S.history.slice() }; },
+  };
+
+  // ---------- 시작 ----------
+  UI.leader = ownsLock();
+  if (!loadState(UI.leader)) sim.prefill(Math.floor(Date.now() / 1000) * 1000);
+  if (UI.leader) claimLock();
+  const prefs = store.get(PREF_KEY);
+  if (prefs && prefs.sound) { UI.sound = true; UI.audioLocked = true; unlockAudio(); }
+  render();
+  setInterval(() => {
+    if (UI.leader && UI.mode === "sim" && !UI.paused) for (let k = 0; k < UI.speed; k++) sim.step(model.S.now + 1000);
+    render();
+  }, 1000);
+  // 5초마다: 운영 탭은 신호를 갱신하고 저장, 보기 전용 탭은 운영 탭이 사라졌는지 확인
+  setInterval(() => {
+    if (UI.leader) { if (ownsLock()) { claimLock(); saveState(); } else becomeFollower(); }
+    else if (ownsLock()) becomeLeader();
+  }, 5000);
+  window.addEventListener("pagehide", () => {
+    saveState();
+    if (UI.leader && store.get(LOCK_KEY) && store.get(LOCK_KEY).id === TAB_ID) store.del(LOCK_KEY);
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) saveState(); });
+  window.addEventListener("resize", render);
+})();
+</script>
